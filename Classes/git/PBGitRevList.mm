@@ -39,7 +39,6 @@ using namespace std;
 @end
 
 
-#define kRevListThreadKey @"thread"
 #define kRevListRevisionsKey @"revisions"
 
 
@@ -88,9 +87,6 @@ using namespace std;
 
 - (void) updateCommits:(NSDictionary *)update
 {
-	if ([update objectForKey:kRevListThreadKey] != self.parseThread)
-		return;
-	
 	NSArray *revisions = [update objectForKey:kRevListRevisionsKey];
 	if (!revisions || [revisions count] == 0)
 		return;
@@ -126,10 +122,12 @@ using namespace std;
 {
 	NSError *error = nil;
 	GTRepository *repo = enumerator.repository;
-	[enumerator resetWithOptions:GTEnumeratorOptionsTimeSort];
-	//	[enumerator resetWithOptions:GTEnumeratorOptionsTopologicalSort];
+	// [enumerator resetWithOptions:GTEnumeratorOptionsTimeSort];
+	[enumerator resetWithOptions:GTEnumeratorOptionsTopologicalSort];
+	NSMutableArray *enumBranches = [NSMutableArray new];
+	NSMutableArray *enumTagCommits = [NSMutableArray new];
 	if (rev.isSimpleRef) {
-		GTObject *object = [repo lookupObjectByRevParse:rev.simpleRef error:&error];
+		GTObject *object = [repo lookUpObjectByRevParse:rev.simpleRef error:&error];
 		if ([object isKindOfClass:[GTCommit class]]) {
 			[enumerator pushSHA:object.SHA error:&error];
 		}
@@ -139,17 +137,17 @@ using namespace std;
 			if ([param isEqualToString:@"--branches"]) {
 				NSArray *branches = [repo localBranchesWithError:&error];
 				for (GTBranch *branch in branches) {
-					[enumerator pushSHA:branch.SHA error:&error];
+					[enumBranches addObject:branch];
 				}
 			} else if ([param isEqualToString:@"--remotes"]) {
 				NSArray *branches = [repo remoteBranchesWithError:&error];
 				for (GTBranch *branch in branches) {
-					[enumerator pushSHA:branch.SHA error:&error];
+					[enumBranches addObject:branch];
 				}
 			} else if ([param isEqualToString:@"--tags"]) {
 				for (NSString *ref in allRefs) {
 					if ([ref hasPrefix:@"refs/tags/"]) {
-						GTObject *tag = [repo lookupObjectByRevParse:ref error:&error];
+						GTObject *tag = [repo lookUpObjectByRevParse:ref error:&error];
 						GTCommit *commit = nil;
 						if ([tag isKindOfClass:[GTCommit class]]) {
 							commit = (GTCommit *)tag;
@@ -160,7 +158,7 @@ using namespace std;
 
 						if ([commit isKindOfClass:[GTCommit class]])
 						{
-							[enumerator pushSHA:commit.SHA error:&error];
+							[enumTagCommits addObject:commit];
 						}
 					}
 				}
@@ -171,6 +169,28 @@ using namespace std;
 			}
 		}
 	}
+
+	NSMutableArray *branchAndTagCommits = [NSMutableArray arrayWithArray:enumTagCommits];
+	for (GTBranch *branch in enumBranches) {
+		NSError *objectLookupError = nil;
+		GTObject *gtObject = [repo lookUpObjectBySHA:branch.SHA error:&objectLookupError];
+		if ([gtObject isKindOfClass:[GTCommit class]]) {
+			[branchAndTagCommits addObject:gtObject];
+		}
+	}
+	NSArray *sortedBranchesAndTags = [branchAndTagCommits sortedArrayWithOptions:NSSortStable usingComparator:^NSComparisonResult(id obj1, id obj2) {
+		GTCommit *branchCommit1 = obj1;
+		GTCommit *branchCommit2 = obj2;
+
+		return [branchCommit2.commitDate compare:branchCommit1.commitDate];
+	}];
+
+	for (GTCommit *commit in sortedBranchesAndTags) {
+		NSError *pushError = nil;
+		[enumerator pushSHA:commit.SHA error:&pushError];
+	}
+
+
 }
 
 - (void) addCommitsFromEnumerator:(GTEnumerator *)enumerator
@@ -212,9 +232,9 @@ using namespace std;
 			}
 			
 			if (++num % 100 == 0) {
-				if ([[NSDate date] timeIntervalSinceDate:lastUpdate] > 0.5) {
+				if ([[NSDate date] timeIntervalSinceDate:lastUpdate] > 0.5 && ![[NSThread currentThread] isCancelled]) {
 					dispatch_group_wait(decorateGroup, DISPATCH_TIME_FOREVER);
-					NSDictionary *update = [NSDictionary dictionaryWithObjectsAndKeys:currentThread, kRevListThreadKey, revisions, kRevListRevisionsKey, nil];
+					NSDictionary *update = [NSDictionary dictionaryWithObjectsAndKeys:revisions, kRevListRevisionsKey, nil];
 					[self performSelectorOnMainThread:@selector(updateCommits:) withObject:update waitUntilDone:NO];
 					revisions = [NSMutableArray array];
 					lastUpdate = [NSDate date];
@@ -225,12 +245,19 @@ using namespace std;
 	
 	dispatch_group_wait(loadGroup, DISPATCH_TIME_FOREVER);
 	dispatch_group_wait(decorateGroup, DISPATCH_TIME_FOREVER);
+
+    dispatch_release(loadGroup);
+    dispatch_release(decorateGroup);
+    dispatch_release(loadQueue);
+    dispatch_release(decorateQueue);
 	
 	// Make sure the commits are stored before exiting.
-	NSDictionary *update = [NSDictionary dictionaryWithObjectsAndKeys:currentThread, kRevListThreadKey, revisions, kRevListRevisionsKey, nil];
-	[self performSelectorOnMainThread:@selector(updateCommits:) withObject:update waitUntilDone:YES];
-	
-	[self performSelectorOnMainThread:@selector(finishedParsing) withObject:nil waitUntilDone:NO];
+	if (![[NSThread currentThread] isCancelled]) {
+		NSDictionary *update = [NSDictionary dictionaryWithObjectsAndKeys:revisions, kRevListRevisionsKey, nil];
+		[self performSelectorOnMainThread:@selector(updateCommits:) withObject:update waitUntilDone:YES];
+		
+		[self performSelectorOnMainThread:@selector(finishedParsing) withObject:nil waitUntilDone:NO];
+	}
 }
 
 @end
