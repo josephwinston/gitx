@@ -10,7 +10,6 @@
 
 #import "GLFileView.h"
 #import "PBGitTree.h"
-#import "PBGitSHA.h"
 #import "PBGitCommit.h"
 #import "PBGitHistoryController.h"
 
@@ -110,7 +109,7 @@
 
 - (void) selectCommit:(NSString*)c
 {
-	[historyController selectCommit:[PBGitSHA shaWithString:c]];
+	[historyController selectCommit: [GTOID oidWithSHA: c]];
 }
 
 #pragma mark MGScopeBarDelegate methods
@@ -247,7 +246,7 @@
 			
 			int n;
 			for(n=1;n<nLines;n++){
-				line=[lines objectAtIndex:i++];
+				i++;
 				do{
 					line=[lines objectAtIndex:i++];
 				}while([line characterAtIndex:0]!='\t');
